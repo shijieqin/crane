@@ -202,10 +202,3 @@ func appendManagerIfNotNil(managers []manager.Manager, m manager.Manager) []mana
 	}
 	return managers
 }
-
-func appendManagerIfNotNil(managers []manager.Manager, m manager.Manager) []manager.Manager {
-	if m != nil {
-		return append(managers, m)
-	}
-	return managers
-}
