@@ -99,6 +99,8 @@ func NewAgent(ctx context.Context,
 
 	agent.managers = managers
 
+	metrics.RegisterResourceMetrics(agent.nodeName, podInformer.Lister(), cadvisorManager, exclusiveCPUSet)
+
 	return agent, nil
 }
 
