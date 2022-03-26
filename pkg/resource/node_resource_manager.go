@@ -153,7 +153,7 @@ func (o *NodeResourceManager) UpdateNodeResource() {
 	if !equality.Semantic.DeepEqual(&node.Status, &nodeCopy.Status) {
 		// Update Node status extend-resource info
 		// TODO fix: strategic merge patch kubernetes
-		if _, err := o.client.CoreV1().Nodes().Update(context.TODO(), nodeCopy, metav1.UpdateOptions{}); err != nil {
+		if _, err := o.client.CoreV1().Nodes().UpdateStatus(context.TODO(), nodeCopy, metav1.UpdateOptions{}); err != nil {
 			klog.Errorf("Failed to update node %s's status extend-resource, %v", nodeCopy.Name, err)
 			return
 		}
