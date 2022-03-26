@@ -91,10 +91,10 @@ func (rc *resourceMetricsCollector) Collect(ch chan<- prometheus.Metric) {
 
 	atomic.AddUint64(&cpuUsageCounter, offlineCpuUsageIncrease)
 	rc.collectNodeExtCPUMetrics(ch, &lastTime)
-	rc.collectCpuCoresCanBeReusedMetrics(ch, cpuCannotBeReclaimed+offlineCpuUsageAvg)
+	rc.collectCpuCoresCanNotBeReusedMetrics(ch, cpuCannotBeReclaimed - offlineCpuUsageAvg * 1000)
 }
 
-func (rc *resourceMetricsCollector) collectCpuCoresCanBeReusedMetrics(ch chan<- prometheus.Metric, value float64) {
+func (rc *resourceMetricsCollector) collectCpuCoresCanNotBeReusedMetrics(ch chan<- prometheus.Metric, value float64) {
 	ch <- metrics.NewLazyMetricWithTimestamp(time.Now(),
 		prometheus.MustNewConstMetric(nodeCPUCannotBeReclaimedDesc, prometheus.GaugeValue, value, rc.node))
 }
@@ -150,6 +150,8 @@ func (rc *resourceMetricsCollector) getExtCpuUsage() (uint64, float64) {
 		}
 	}
 	rc.latestContainersStates = containerStates
+
+	klog.V(6).Infof("extResCpuUseIncrease: %s, extResCpuUseSample: %s", extResCpuUseIncrease, extResCpuUseSample)
 
 	return extResCpuUseIncrease, extResCpuUseSample
 }

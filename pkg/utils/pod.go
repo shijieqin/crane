@@ -2,7 +2,9 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"k8s.io/apimachinery/pkg/types"
 	"strings"
 	"time"
 
@@ -72,7 +74,7 @@ func GetPodCondition(status *v1.PodStatus, conditionType v1.PodConditionType) (i
 // EvictPodWithGracePeriod evict pod with grace period
 func EvictPodWithGracePeriod(client clientset.Interface, pod *v1.Pod, gracePeriodSeconds *int32) error {
 	if kubelettypes.IsCriticalPod(pod) {
-		return fmt.Errorf("Eviction manager: cannot evict a critical pod(%s)", klog.KObj(pod))
+		return fmt.Errorf("eviction manager: cannot evict a critical pod(%s)", klog.KObj(pod))
 	}
 
 	var grace = GetInt64withDefault(pod.Spec.TerminationGracePeriodSeconds, known.DefaultDeletionGracePeriodSeconds)
@@ -89,6 +91,37 @@ func EvictPodWithGracePeriod(client clientset.Interface, pod *v1.Pod, gracePerio
 	}
 
 	return client.CoreV1().Pods(pod.Namespace).EvictV1beta1(context.Background(), e)
+}
+
+func EvictPodForExtResource(client clientset.Interface, pod *v1.Pod) error {
+	ref := metav1.GetControllerOfNoCopy(pod)
+	deleteLabel := "gocrane.io/specified-delete"
+	if ref != nil {
+		if ref.Kind == "CloneSet" {
+			deleteLabel = "apps.kruise.io/specified-delete"
+		}
+	}
+
+	deletePath := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{
+				deleteLabel: "true",
+			},
+		},
+	}
+	jsonPatch, err := json.Marshal(deletePath)
+	if err != nil {
+		klog.Errorf("Failed to generate jsonPatch, %v", err)
+		return err
+	}
+	klog.V(4).Infof("jsonPatch: %s", jsonPatch)
+
+	// patch pod delete-label info
+	if _, err := client.CoreV1().Pods(pod.Namespace).Patch(context.TODO(), pod.Name, types.MergePatchType, jsonPatch, metav1.PatchOptions{}, "status"); err != nil {
+		klog.Errorf("Failed to patch pod %s's delete-label, %v", pod.Name, err)
+		return err
+	}
+	return nil
 }
 
 // CalculatePodRequests sum request total from pods
@@ -179,6 +212,18 @@ func GetContainerExtCpuResFromPod(pod *v1.Pod, containerName string) (resource.Q
 	return GetExtCpuRes(*c)
 }
 
+func GetPodRequestExtCpuMilliValue(pod *v1.Pod) (int64, bool) {
+	var extCpu int64 = 0
+	useExtCpu := false
+	for _, container := range pod.Spec.Containers {
+		if quantity, ok := container.Resources.Requests[v1.ResourceName(fmt.Sprintf(ExtResourcePrefixFormat, v1.ResourceCPU))]; ok {
+			useExtCpu = true
+			extCpu += quantity.MilliValue()
+		}
+	}
+	return extCpu, useExtCpu
+}
+
 func GetContainerStatus(pod *v1.Pod, container v1.Container) v1.ContainerState {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.Name == container.Name {
@@ -195,4 +240,21 @@ func GetContainerIdFromPod(pod *v1.Pod, containerName string) string {
 		}
 	}
 	return ""
+}
+
+func IsPodDeleting(pod *v1.Pod) bool {
+	if pod.DeletionTimestamp != nil {
+		return true
+	}
+	ref := metav1.GetControllerOfNoCopy(pod)
+	deleteLabel := "gocrane.io/specified-delete"
+	if ref != nil {
+		if ref.Kind == "CloneSet" {
+			deleteLabel = "apps.kruise.io/specified-delete"
+		}
+	}
+	if _, ok := pod.Labels[deleteLabel]; ok {
+		return true
+	}
+	return false
 }

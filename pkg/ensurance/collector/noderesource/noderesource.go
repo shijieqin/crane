@@ -45,15 +45,19 @@ func (n *NodeResource) Collect() (map[string][]common.TimeSeries, error) {
 		return nil, err
 	}
 
-	allExtCpu := node.Status.Allocatable.Name(corev1.ResourceName(fmt.Sprintf(utils.ExtResourcePrefixFormat, corev1.ResourceCPU.String())), resource.DecimalSI).Value()
+	allExtCpu := node.Status.Allocatable.Name(corev1.ResourceName(fmt.Sprintf(utils.ExtResourcePrefixFormat, corev1.ResourceCPU.String())), resource.DecimalSI).MilliValue()
 	var distributeExtCpu int64 = 0
 	for _, pod := range pods {
 		for _, container := range pod.Spec.Containers {
 			if quantity, ok := container.Resources.Requests[corev1.ResourceName(fmt.Sprintf(utils.ExtResourcePrefixFormat, corev1.ResourceCPU.String()))]; ok {
-				distributeExtCpu += quantity.Value()
+				distributeExtCpu += quantity.MilliValue()
 			}
 		}
 	}
 	klog.V(4).Infof("allExtCpu: %d, distributeExtCpu: %d", allExtCpu, distributeExtCpu)
 	return map[string][]common.TimeSeries{string(types.MetricNameExtCpuTotalDistribute): {{Samples: []common.Sample{{Value: (float64(distributeExtCpu) / float64(allExtCpu)) * 100, Timestamp: time.Now().Unix()}}}}}, nil
+}
+
+func (n *NodeResource) Stop() error{
+	return nil
 }

@@ -313,7 +313,7 @@ func (o *NodeResourceManager) GetCpuCoreCanNotBeReclaimedFromLocal() float64 {
 	var extResContainerCpuUsageTotal float64 = 0
 	extResContainerCpuUsageTotalTimeSeries, ok := o.state[string(types.MetricNameExtResContainerCpuTotalUsage)]
 	if ok {
-		extResContainerCpuUsageTotal = extResContainerCpuUsageTotalTimeSeries[0].Samples[0].Value
+		extResContainerCpuUsageTotal = extResContainerCpuUsageTotalTimeSeries[0].Samples[0].Value * 1000
 	} else {
 		klog.V(1).Infof("Can't get %s from NodeResourceManager local state", types.MetricNameExtResContainerCpuTotalUsage)
 	}

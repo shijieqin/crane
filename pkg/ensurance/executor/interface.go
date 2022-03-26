@@ -16,6 +16,7 @@ type AvoidanceExecutor struct {
 	ScheduleExecutor ScheduleExecutor
 	ThrottleExecutor ThrottleExecutor
 	EvictExecutor    EvictExecutor
+	EvictExtResourceExecutor EvictExtResourceExecutor
 }
 
 type ExecuteContext struct {
