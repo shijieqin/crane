@@ -205,14 +205,14 @@ func (o *NodeResourceManager) BuildNodeStatus(node *v1.Node) map[v1.ResourceName
 			maxUsage = localCanNotBeReclaimedResource[resourceName]
 			resourceFrom = "local"
 		}
+
 		var nextRecommendation float64
 		switch resourceName {
 		case v1.ResourceCPU:
-			// cpu need to be scaled to m as ext resource cannot be decimal
 			if reserveCpuPercent != nil {
-				nextRecommendation = (float64(node.Status.Allocatable.Cpu().Value())**reserveCpuPercent - maxUsage) * 1000
+				nextRecommendation = float64(node.Status.Allocatable.Cpu().Value()) - float64(node.Status.Allocatable.Cpu().Value()) **reserveCpuPercent - maxUsage / 1000
 			} else {
-				nextRecommendation = (float64(node.Status.Allocatable.Cpu().Value()) - maxUsage) * 1000
+				nextRecommendation = float64(node.Status.Allocatable.Cpu().Value()) - maxUsage / 1000
 			}
 		case v1.ResourceMemory:
 			// unit of memory in prometheus is in Ki, need to be converted to byte
@@ -325,6 +325,8 @@ func (o *NodeResourceManager) GetCpuCoreCanNotBeReclaimedFromLocal() float64 {
 	} else {
 		klog.V(1).Infof("Can't get %s from NodeResourceManager local state", types.MetricNameExclusiveCPUIdle)
 	}
+
+	klog.V(6).Infof("nodeCpuUsageTotal: %s, exclusiveCPUIdle: %s, extResContainerCpuUsageTotal: %s", nodeCpuUsageTotal, exclusiveCPUIdle, extResContainerCpuUsageTotal)
 
 	// 1. Exclusive tethered CPU cannot be reclaimed even if the free part is free, so add the exclusive CPUIdle to the CanNotBeReclaimed CPU
 	// 2. The CPU used by extRes-container needs to be reclaimed, otherwise it will be double-counted due to the allotted mechanism of k8s, so the extResContainerCpuUsageTotal is subtracted from the CanNotBeReclaimedCpu

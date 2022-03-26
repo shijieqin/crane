@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"github.com/gocrane/crane/pkg/ensurance/collector/noderesource"
 	"sync"
 	"time"
 
@@ -178,6 +179,13 @@ func (s *StateCollector) UpdateCollectors() {
 
 		if _, exists := s.collectors.Load(types.CadvisorCollectorType); !exists {
 			s.collectors.Store(types.CadvisorCollectorType, cadvisor.NewCadvisorCollector(s.podLister, s.GetCadvisorManager()))
+		}
+
+		if _, exists := s.collectors.Load(types.NodeResourceCollectorType); !exists {
+			c := noderesource.NewNodeResourceCollector(s.nodeName, s.nodeLister, s.podLister)
+			if c != nil {
+				s.collectors.Store(types.NodeResourceCollectorType, c)
+			}
 		}
 		break
 	}
