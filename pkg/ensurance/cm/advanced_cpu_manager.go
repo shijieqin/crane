@@ -3,7 +3,11 @@ package cm
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/gocrane/crane/pkg/utils"
+	"go.uber.org/atomic"
 	"io/ioutil"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +23,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 
 	"github.com/gocrane/crane/pkg/ensurance/collector/cadvisor"
@@ -67,6 +70,8 @@ type AdvancedCpuManager struct {
 	// stateFileDirectory holds the directory where the state file for checkpoints is held.
 	stateFileDirectory string
 
+	containerHasChanged atomic.Bool
+
 	cadvisor.Manager
 }
 
@@ -89,6 +94,7 @@ func NewAdvancedCpuManager(podInformer coreinformers.PodInformer, runtimeEndpoin
 	//pod add actions need to handle quickly, delete/update can handle in loop laterly
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(new interface{}) {
+			m.containerHasChanged.Store(true)
 			pod := new.(*v1.Pod)
 			for _, container := range pod.Spec.Containers {
 				err := m.Allocate(pod, &container)
@@ -115,7 +121,7 @@ func (m *AdvancedCpuManager) Run(stop <-chan struct{}) {
 		klog.Errorf("GetMachineInfo failed %s", err.Error())
 		return
 	}
-	topo, err := topology.Discover(machineInfo)
+	topo, err := Discover(machineInfo)
 	if err != nil {
 		klog.Errorf("Topology Discover failed %s", err.Error())
 		return
@@ -194,8 +200,26 @@ func (m *AdvancedCpuManager) AddContainer(p *v1.Pod, c *v1.Container) error {
 }
 
 func (m *AdvancedCpuManager) reconcileState() {
-	m.syncState(true)
+	reAssignments := m.syncState(true)
 	sharedCPUSet := m.getSharedCpu().Union(m.state.GetDefaultCPUSet())
+
+	if reAssignments {
+		for _, pod := range m.activepods() {
+			for _, container := range pod.Spec.Containers {
+				containerID := GetContainerIdFromPod(pod, container.Name)
+				cset := m.policy.CPUTopology().CPUDetails.CPUs()
+				klog.Infof("[Advancedcpumanager] reconcileState: updating container (pod: %s, container: %s, container id: %s, cpuset: \"%v\")",
+					pod.Name, container.Name, containerID, cset)
+				err := m.updateContainerCPUSet(containerID, cset)
+				if err != nil {
+					klog.Errorf("[Advancedcpumanager] reconcileState: failed to update container (pod: %s, container: %s, container id: %s, cpuset: \"%v\", error: %v)",
+						pod.Name, container.Name, containerID, cset, err)
+					continue
+				}
+			}
+		}
+	}
+
 	for _, pod := range m.activepods() {
 		for _, container := range pod.Spec.Containers {
 			containerID := GetContainerIdFromPod(pod, container.Name)
@@ -215,7 +239,7 @@ func (m *AdvancedCpuManager) reconcileState() {
 	}
 }
 
-func (m *AdvancedCpuManager) syncState(doAllocate bool) {
+func (m *AdvancedCpuManager) syncState(doAllocate bool) bool {
 	// We grab the lock to ensure that no new containers will grab CPUs while
 	// executing the code below. Without this lock, its possible that we end up
 	// removing state that is newly added by an asynchronous call to
@@ -223,15 +247,18 @@ func (m *AdvancedCpuManager) syncState(doAllocate bool) {
 	m.Lock()
 	defer m.Unlock()
 	assignments := m.state.GetCPUAssignments()
+	reAssignments := false
 
 	// Build a list of (podUID, containerName) pairs for all need to be assigned containers in all active Pods.
 	toBeAssignedContainers := make(map[string]map[string]struct{})
-	for _, pod := range m.activepods() {
+	activepods := m.activepods()
+	for _, pod := range activepods {
 		toBeAssignedContainers[string(pod.UID)] = make(map[string]struct{})
 		for _, container := range pod.Spec.Containers {
 			if m.policy.NeedAllocated(pod, &container) {
 				toBeAssignedContainers[string(pod.UID)][container.Name] = struct{}{}
 				if _, ok := assignments[string(pod.UID)][container.Name]; !ok && doAllocate {
+					m.containerHasChanged.Store(true)
 					err := m.policy.Allocate(m.state, pod, &container)
 					if err != nil {
 						klog.Errorf("[Advancedcpumanager] Allocate error: %v", err)
@@ -247,6 +274,7 @@ func (m *AdvancedCpuManager) syncState(doAllocate bool) {
 	for podUID := range assignments {
 		for containerName := range assignments[podUID] {
 			if _, ok := toBeAssignedContainers[podUID][containerName]; !ok {
+				m.containerHasChanged.Store(true)
 				klog.Errorf("[Advancedcpumanager] removeStaleState: removing (pod %s, container: %s)", podUID, containerName)
 				err := m.policyRemoveContainerByRef(podUID, containerName)
 				if err != nil {
@@ -255,6 +283,79 @@ func (m *AdvancedCpuManager) syncState(doAllocate bool) {
 			}
 		}
 	}
+
+	if m.containerHasChanged.Load() && doAllocate {
+		toBeAssignedContainerList := make([]containerInfo,0)
+		for podUID := range toBeAssignedContainers{
+			pod := utils.GetPodFromPodListWithUID(activepods, podUID)
+			for containerName := range toBeAssignedContainers[podUID]{
+				container := utils.GetContainerFromPod(pod, containerName)
+				toBeAssignedContainerList = append(toBeAssignedContainerList, containerInfo{pod, container})
+			}
+		}
+
+		sort.Slice(
+			toBeAssignedContainerList,
+			func(i, j int) bool {
+				iPodName:=  toBeAssignedContainerList[i].pod.Name
+				jPodName:=  toBeAssignedContainerList[j].pod.Name
+
+				iContainerName:=  toBeAssignedContainerList[i].container.Name
+				jContainerName:=  toBeAssignedContainerList[j].container.Name
+
+				iRequestCpu := toBeAssignedContainerList[i].container.Resources.Requests.Cpu().Value()
+				jRequestCpu := toBeAssignedContainerList[j].container.Resources.Requests.Cpu().Value()
+
+				cpusPerCCD := int64(m.policy.CPUTopology().CPUsPerCCD())
+
+				iMod := iRequestCpu % cpusPerCCD
+				jMod := jRequestCpu % cpusPerCCD
+
+				iCpusetpolicy := GetPodCPUSetType(toBeAssignedContainerList[i].pod, toBeAssignedContainerList[i].container)
+				jCpusetpolicy := GetPodCPUSetType(toBeAssignedContainerList[j].pod, toBeAssignedContainerList[j].container)
+
+				iPriorityClassValue := utils.GetInt32withDefault(toBeAssignedContainerList[i].pod.Spec.Priority, 0)
+				jPriorityClassValue := utils.GetInt32withDefault(toBeAssignedContainerList[j].pod.Spec.Priority, 0)
+
+				return (iMod == 0 && jMod != 0) ||
+					(iMod == jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 1) ||
+					(iMod == jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue > jPriorityClassValue) ||
+					(iMod == jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue == jPriorityClassValue && iRequestCpu > jRequestCpu) ||
+					(iMod == jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue == jPriorityClassValue && iRequestCpu == jRequestCpu && iPodName > jPodName) ||
+					(iMod == jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue == jPriorityClassValue && iRequestCpu == jRequestCpu && iPodName == jPodName && iContainerName > jContainerName) ||
+					(iMod != 0 && jMod != 0 && iMod != jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 1) ||
+					(iMod != 0 && jMod != 0 && iMod != jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue > jPriorityClassValue) ||
+					(iMod != 0 && jMod != 0 && iMod != jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue == jPriorityClassValue && iRequestCpu > jRequestCpu) ||
+					(iMod != 0 && jMod != 0 && iMod != jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue == jPriorityClassValue && iRequestCpu == jRequestCpu && iPodName > jPodName) ||
+					(iMod != 0 && jMod != 0 && iMod != jMod && iCpusetpolicy.Compare(jCpusetpolicy) == 0 && iPriorityClassValue == jPriorityClassValue && iRequestCpu == jRequestCpu && iPodName == jPodName && iContainerName > jContainerName)
+			})
+
+		assignments := m.state.GetCPUAssignments()
+		defaultCpuSet := m.state.GetDefaultCPUSet()
+
+		for _, containerInfo := range toBeAssignedContainerList{
+			if cpuSet, ok := m.state.GetCPUSet(string(containerInfo.pod.UID), containerInfo.container.Name); ok {
+				m.state.SetDefaultCPUSet(m.state.GetDefaultCPUSet().Union(cpuSet))
+			}
+		}
+
+		for _, containerInfo := range toBeAssignedContainerList{
+			err := m.policy.Allocate(m.state, containerInfo.pod, containerInfo.container)
+			if err != nil {
+				klog.Errorf("[Advancedcpumanager] Allocate error: %v", err)
+				m.state.SetCPUAssignments(assignments)
+				m.state.SetDefaultCPUSet(defaultCpuSet)
+				break
+			}
+		}
+
+		m.containerHasChanged.Store(false)
+
+		newAssignments := m.state.GetCPUAssignments()
+
+		reAssignments = reflect.DeepEqual(assignments, newAssignments)
+	}
+	return reAssignments
 }
 
 func (m *AdvancedCpuManager) policyRemoveContainerByRef(podUID string, containerName string) error {

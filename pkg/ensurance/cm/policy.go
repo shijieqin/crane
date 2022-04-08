@@ -18,4 +18,6 @@ type Policy interface {
 	RemoveContainer(s state.State, podUID string, containerName string) error
 	// NeedAllocated is called to judge if container needs to allocate cpu
 	NeedAllocated(pod *v1.Pod, container *v1.Container) bool
+	// CPUTopology
+	CPUTopology() *CPUTopology
 }

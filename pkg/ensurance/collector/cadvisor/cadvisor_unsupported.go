@@ -4,6 +4,8 @@
 package cadvisor
 
 import (
+	"errors"
+
 	info "github.com/google/cadvisor/info/v1"
 	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
 	corelisters "k8s.io/client-go/listers/core/v1"

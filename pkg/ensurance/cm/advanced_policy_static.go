@@ -6,7 +6,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 )
@@ -16,12 +15,12 @@ const AdvancedPolicyStatic policyName = "advanced-static"
 
 type advancedStaticPolicy struct {
 	// cpu socket topology
-	topology *topology.CPUTopology
+	topology *CPUTopology
 	// set of CPUs that is not available for exclusive assignment
 	reserved cpuset.CPUSet
 }
 
-func NewAdvancedStaticPolicy(topology *topology.CPUTopology) (Policy, error) {
+func NewAdvancedStaticPolicy(topology *CPUTopology) (Policy, error) {
 	return &advancedStaticPolicy{
 		topology: topology,
 		reserved: cpuset.MustParse("0"),
@@ -168,4 +167,8 @@ func (p *advancedStaticPolicy) guaranteedCPUs(pod *v1.Pod, container *v1.Contain
 		return 0
 	}
 	return int(cpuQuantity.Value())
+}
+
+func (p *advancedStaticPolicy) CPUTopology() *CPUTopology {
+	return p.topology
 }

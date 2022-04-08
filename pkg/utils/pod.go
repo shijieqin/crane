@@ -191,6 +191,18 @@ func GetContainerNameFromPod(pod *v1.Pod, containerId string) string {
 	return ""
 }
 
+func GetPodFromPodListWithUID(podList []*v1.Pod, uid string) *v1.Pod {
+	if uid == "" {
+		return nil
+	}
+	for _, pod := range podList {
+		if string(pod.UID) == uid {
+			return pod
+		}
+	}
+	return nil
+}
+
 func GetContainerFromPod(pod *v1.Pod, containerName string) *v1.Container {
 	if containerName == ""{
 		return nil
